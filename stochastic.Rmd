@@ -1,0 +1,280 @@
+---
+title: "確率変数とかの話"
+author: "辻　栄一"
+date: "2017年12月6日"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(rstan)
+source("initialize.R")
+source("util/DBDA2E-utilities.R")
+```
+
+## 確率変数やら面倒
+
+### 重さを測ってみる
+
+実験とかやっているとわかるのですが、重量を測定するのは比較的簡単ですね。
+研究室にしろ、現場にしろ、至る所に電子天秤がおいてあり、重さを測りたいものをのせるだけで、
+けっこう多くの桁数が表示されます。それだけ、正確に測れてるってことなんでしょうか？
+
+今回は、測定精度の話をきちんとするつもりはありません。（とっても大変なんです）
+何を言いたいかというと、「なんにせよ*正確に*測るのは難しい」というところです。
+色んな所で聞かれる「真の値」なんて、測定することは*不可能*だという立場について考えていきたいのです。
+
+### 真の重さ？
+
+さて、ある「物」を見たときに、質量というのは比較的安定なものだということは、
+皆さんもご存知で、しかも感覚に合うと感じているのではないでしょうか？
+
+目の前に鉄の玉があるとき、表面が参加されていくから「質量」は一定でないとか、
+微量に含まれている放射性同位元素が崩壊していくから(ry
+などの話をのぞけば、「真の値」があるんだろうなというかんじです。
+
+まぁ実は、質量の測定というのはそんなに簡単ではなく、重量が云々という話はとっても面白いんですが、今回は扱わないことにしましょう。秤は、*適切に*調整されていて、表示される値は「質量」であると考えて問題がない。という前提を置きます。
+
+### 誤差？
+
+誤差という言葉は便利です。正確に使うのは多分難しいです。そこで、本稿では、とくに初期の段階では、「誤差」という単語をしつこく書くようにします。
+
++ある「物」を、電子天秤に載せたら、12.025g（グラム）と表示されました。
++同じ物をもう一度、同じ電子天秤に載せたら12.30gが表示されました。
++心配になったので、乗せては下ろしを10回繰り返して数値を記録したら
+`r dt.sc`となりました。平均は`r round(mean(dt.sc),3)`です。普遍標準偏差は`r round(sd(dt.sc),3)`とかになるわけです。
+
+さて、この実験結果から、「真の値は`r round(mean(dt.sc),3)`である！」というのは、ちょっと
+占い師めいていていただけない。そこで、標準偏差とか誤差とかを一緒に示すのが良心的でしょう。
+もう、このあたりで嫌になる人も多いと思います。
+研究所や品質管理などをやったひとに聞けば嫌というほど詳しく説明してくれるし、
+google先生で「誤差論」とググれば、ちゃんとしたサイトがたくさん見つかります。
+
+ざっくりいって、実験データから「推定」される値と、その「範囲」を認識することが大事なんだよということだけを頭に入れておけば良いです。
+
+## 為替レート
+
+
+[みずほ銀行のサイト](https://www.mizuhobank.co.jp/rate/market/historical.html)から2017-12-06にダウンロード(data/quote.csv)
+
+```{r, echo=FALSE}
+kawase %>%
+  gather(key="currency", value = rate, -date) %>%
+  ggplot(aes(x=date, y=rate, group=currency)) +
+  geom_line(aes(color=currency)) +
+  labs(
+    x="日付",
+    y="為替レート",
+    color="通貨"
+  )
+
+```
+
+```{r}
+kawase.2017.nov <- kawase %>%
+  filter(date > as.POSIXct("2017-11-01") & date < as.POSIXct("2017-11-30")) 
+
+ggplot(kawase.2017.nov, aes(x=date, y=USD)) +
+  geom_point(size = 3) +
+  labs(
+    x="日付（2017年）"
+  )
+```
+
+
+## 電子天秤の表示について考えてみる
+
+電子天秤に限らないのですが、表示の最後の桁が0/5（ゼロか5）という機械があります。
+物差しとかのアナログなやつも、目測で最小目盛の半分まで読むというのが習慣です。
+電子天秤で重さを測ると、最後の数字がパラパラと動くようなときもありますよね。
+
+ということで、一つの量を測定するときに、複数回測定を行いその値を平均するというのが一般的な方法です。
+
+### 表示の最後の最後の桁のあつかい
+
+測定器の小数点以下の表示桁数が3桁あり、最後の桁は0/5だという場合を考えてみましょう。
+まずは、最終桁数を0/5に制限する関数をRで実装します。
+
+```{r}
+round2 <- function(x, digits = 3){
+    round(x*2, (digits-1))/2
+}
+
+```
+この実装だと、digitsが0とかで問題が発生しますが、とりあえずは放置。
+
+
+
+```{r}
+tr.x <- seq(0, 0.01, by = 0.0005)
+
+data.frame("x"=tr.x, "rnd"=round(tr.x,3), "rnd2"=round2(tr.x, 3)) %>%
+
+ggplot(aes(x=x, y=rnd2)) +
+  geom_point() +
+  labs(
+    x="true weight",
+    y="obs weight"
+  )
+
+```
+
+こんな感じで、階段状の出力になります。
+
+次は、参考用のダミーデータ。
+
+```{r, echo=FALSE}
+set.seed(2896)
+weight.center = 1.2532
+weight.sd = 0.002
+
+N.data <- 10000
+
+obs.dt <- rnorm(N.data, mean = weight.center, sd=weight.sd)
+
+dtf <- data.frame("n"=1:N.data, "true"=obs.dt, "observe"=round2(obs.dt,3)) %>%
+  mutate(cum.true=cummean(true), cum.obs=cummean(observe)) %>%
+  mutate(tr.sd=sqrt(cumsum((true - cum.true)^2)/n), 
+         obs.sd=sqrt(cumsum((observe - cum.obs)^2)/n))
+  
+dtf %>%
+  filter(n < 1000) %>%
+  ggplot(aes(x=n,y=tr.sd)) +
+  geom_line() +
+    geom_line(aes(x=n,y=obs.sd), color="red") +
+  geom_hline(yintercept = weight.sd, linetype="dashed")
+```
+
+
+「真」の重さは`r weight.center`だとします。これは、いわゆる誤差は含んでいないと考えます。
+でも実際に「真」の値を直接測定することは不可能です。
+測定には、必ず誤差が含まれます。この例では、正規分布に従う「ノイズ」が真の測定値に加算されます。さらに、この秤の目盛りの最後の桁は0/5に限定されているので、測定値がその制限を受けます。
+
+$$
+  N(x|\mu, \sigma)=F(x)=\frac{1}{\sqrt{2\pi \sigma^2}}\exp{\left\{-\frac{(x-\mu)^2}{2\sigma^2}\right\}}
+$$
+標準偏差$\sigma$を`r weight.sd`として、乱数を発生させます。
+```{r}
+dtf %>%
+  filter(n <100) %>%
+  ggplot(aes(x=n,y=cum.true)) +
+  geom_line(color="blue") +
+  geom_line(aes(x=n,y=cum.obs), color="red") +
+  geom_ribbon(aes(ymin=cum.true-tr.sd, ymax=cum.true+tr.sd), alpha=0.2) +
+  geom_hline(yintercept = weight.center, linetype="dashed") +
+  geom_ribbon(aes(ymin=cum.obs-obs.sd, ymax=cum.obs+obs.sd), alpha=0.2,fill="red")
+```
+```{r}
+#data for stan model
+
+Num.data = c(100, 10, 5)
+
+```
+
+データ数は`r Num.data`でやる。
+
+```{stan output.var="wgt1"}
+data {
+  int N;
+  real Obs[N];
+}
+
+parameters {
+  real<lower=0> mu;
+  real<lower=0> sd_obs;
+}
+
+model {
+  for(n in 1:N)
+    Obs[n] ~ normal(mu, sd_obs);
+}
+
+```
+
+```{r}
+data1 <- list(
+  N=Num.data[1],
+  Obs=dtf$observe[1:Num.data[1]]
+)
+
+fit1 <- sampling(wgt1, data1,
+                 core=4,
+                 iter=10000)
+```
+
+```{r}
+rstan::traceplot(fit1)
+
+show(fit1)
+
+stan_dens(fit1, pars=c("mu"), separate_chains = TRUE)
+
+stan_dens(fit1, pars=c("sd_obs"), separate_chains = TRUE)
+```
+```{r}
+data2 <- list(
+  N=Num.data[2],
+  Obs=dtf$observe[1:Num.data[2]]
+)
+
+fit2 <- sampling(wgt1, data2,
+                 core=4,
+                 iter=10000)
+```
+
+```{r}
+show(fit2)
+
+rstan::traceplot(fit2)
+stan_dens(fit2, pars=c("mu"), separate_chains = TRUE)
+
+stan_dens(fit2, pars=c("sd_obs"), separate_chains = TRUE)
+```
+
+```{r}
+data3 <- list(
+  N=Num.data[3],
+  Obs=dtf$observe[1:Num.data[3]]
+)
+
+fit3 <- sampling(wgt1, data3,
+                 core=4,
+                 iter=10000)
+```
+
+```{r}
+rstan::traceplot(fit3)
+stan_dens(fit3, pars=c("mu"), separate_chains = TRUE)
+stan_dens(fit3, pars=c("sd_obs"), separate_chains = TRUE)
+```
+
+```{r}
+res1 <- rstan::extract(fit1)
+res2 <- rstan::extract(fit2)
+res3 <- rstan::extract(fit3)
+
+
+data.frame("n"=1:length(res1$mu), res1$mu, res2$mu, res3$mu) %>%
+  gather(key="sampleCount", value = mu, - n) %>%
+  filter(mu >1.25 & mu < 1.26) %>%
+  ggplot(aes(x=mu, group=sampleCount)) +
+  geom_line(stat="density", aes(color=sampleCount)) 
+```
+
+```{r}
+data.frame("n"=1:length(res1$sd_obs), res1$sd_obs, res2$sd_obs, res3$sd_obs) %>%
+  gather(key="sampleCount", value = sigma, - n) %>%
+  filter(sigma >0 & sigma < 0.005) %>%
+  ggplot(aes(x=sigma, group=sampleCount)) +
+  geom_line(stat="density", aes(color=sampleCount)) 
+```
+
+
+
+```{r}
+
+```
+

@@ -1,0 +1,89 @@
+---
+title: "Particle Filter on R"
+author: "辻　栄一"
+date: "2017年12月6日"
+output: html_document 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+init.file.name <-paste(getwd(), "initialize.R", sep="/") 
+
+source(init.file.name)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+```
+
+## はじめに
+
+このサイトを作ろうと思ったきっかけは、会社でやっていた統計関係のテーマを模索していたとき、
+時系列データを扱う上で、粒子フィルタに興味をもったからです。
+最初のきっかけは[予測に活かす統計モデリングの基本](https://www.amazon.co.jp/dp/B00MOYKGZY/ref=dp-kindle-redirect?_encoding=UTF8&btkr=1)
+を読んだことでしょう。なにか、会社の収益関連の予測を出来ればいいなぁとか考えながら、統計関係の本を読み漁っていたときに会いました。
+
+本の内容を紹介するとかいうと、やっぱり*ベイズの定理*あたりからやるべきなんでしょうが、
+そういうのは、私がやらなくてもいい読み物がいっぱいあるわけです。
+
+というわけで、私としてはこの本に書いてあるコードをRで書いてみたりしたいと考えています。
+実は、例題くらいはRでやってもすぐ終わるのですが、多分実務という点では、
+遅すぎるということになるのだとは思います。その辺の改良の話はまた別にやることにしましょう。
+
+## 確率分布を粒子で表現する
+
+もちろん、この表現でピンとくる人もいるわけですが、このへんからちょっと考えていけたらと思います。樋口本だと6章あたりまで飛びます。
+
+
+### 乱数ってなんだろう
+
+乱数について考えてみましょう。たとえば、「0から1の間で**乱数**を発生する」という話はよく聞きます。Excelでやろうと思えば簡単で
+
+```
+=RND()
+```
+とかかけば乱数を獲得できます。本稿ではExcelを使わないので、やりたい人は自分で試してみてください。
+
+課題：0から1の範囲の乱数を10個生成して、その分布を見てみましょう
+
+```{r}
+set.seed(2896)
+
+ens_10 <- runif(10, 0, 1)
+
+show(ens_10)
+
+```
+
+数字を見ているだけでは、よくわからないので度数分布をみます。
+
+```{r, echo=FALSE}
+
+p <- ggplot()
+
+p + geom_rug(data=data.frame(X=ens_10), aes(x=X)) +
+  xlim(0, 1) +
+  labs(
+    x="数値"
+  ) +
+  geom_vline(xintercept = 0, linetype="dotted") +
+  geom_vline(xintercept = 1, linetype="dotted")
+
+```
+
+なんか、ばらばらなので「乱数」っぽくていいですね。さて、もっと乱数の数を増やしてみましょう。
+
+```{r}
+N.rnd <- 100
+
+ens_100 <- data.frame("x"=runif(N.rnd, 0, 1), y=1.0, gp="c_100")
+ens_500 <- data.frame("x"=runif(500, 0, 1), y=0.9, gp="c_500")
+
+rnd.ens <- rbind(ens_100, ens_500)
+
+ggplot(rnd.ens, aes(x=x,y=y,group=gp)) +
+  geom_point() +
+  ylim(0.8,1) 
+```
+
