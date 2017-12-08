@@ -1,0 +1,46 @@
+---
+title: "確率変数とか（為替レート）"
+author: "辻　栄一"
+date: "2017年12月8日"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(rstan)
+source("initialize.R")
+source("util/DBDA2E-utilities.R")
+```
+
+## 為替レート
+
+
+[みずほ銀行のサイト](https://www.mizuhobank.co.jp/rate/market/historical.html)から2017-12-06にダウンロード(data/quote.csv)
+
+```{r, echo=FALSE}
+kawase %>%
+  gather(key="currency", value = rate, -date) %>%
+  ggplot(aes(x=date, y=rate, group=currency)) +
+  geom_line(aes(color=currency)) +
+  labs(
+    x="日付",
+    y="為替レート",
+    color="通貨"
+  )
+
+```
+
+
+```{r}
+kawase.2017.nov <- kawase %>%
+  filter(date > as.POSIXct("2017-11-01") & date < as.POSIXct("2017-11-30")) 
+
+ggplot(kawase.2017.nov, aes(x=date, y=USD)) +
+  geom_point(size = 3) +
+  labs(
+    x="日付（2017年）"
+  )
+```

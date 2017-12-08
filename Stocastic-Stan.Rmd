@@ -1,0 +1,453 @@
+---
+title: "Stanで推定"
+author: "辻　栄一"
+date: "2017年12月8日"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(rstan)
+source("initialize.R")
+source("util/DBDA2E-utilities.R")
+source("util/my-util-gen.R")
+```
+
+```{r, include=FALSE}
+set.seed(2896)
+weight.center = 1.2532
+weight.sd = 0.002
+
+N.data <- 10000
+
+obs.dt <- rnorm(N.data, mean = weight.center, sd=weight.sd)
+
+dtf <- data.frame("n"=1:N.data, "obs"=obs.dt, "scale"=round2(obs.dt,3)) %>%
+  mutate(cum.obs=cummean(obs), cum.scale=cummean(scale)) %>%
+  mutate(sd.obs=sqrt(cumsum((obs - cum.obs)^2)/(n-1)), 
+         sd.scale=sqrt(cumsum((scale - cum.scale)^2)/(n-1)))
+```
+
+## データから推定をする
+
+これまでは、最初に「真の値」を仮定して、そこから一連のデータを生成して、その特性を調べるということをやってきました。
+
+このようなシミュレーションは、データの一般的な性質を知る上で大変役に立ちます。
+しかし、実際に仕事をするときには、「真の値」を知りたいので推定を行いますね。
+そして、試料の重さを測定するのに100回というのは、殆どの場合現実的ではありません。
+
+そこで、今回は数回から数十回の測定で、測定機器の測定精度を推定するというイメージで
+データを分析していきましょう。
+
+```{r, include=FALSE}
+#data for stan model
+
+Num.data = c(100, 10, 5)
+
+sc.10 <- dtf[1:10,"scale"]
+```
+
+### どうやって推定するか
+
+データを10回とってみて、例えば`r sc.10`というデータが出たら、平均と分散を計算してみるというのも「推定」です。
+詳細はここでは説明しませんが、これは*最尤推定*という推定です。
+
+データ数が十分に多い、あるいは分布が対象などの場合、最尤推定は十分に満足できるものです。
+しかし、今回はこれとは別の推定を使って考えていきましょう。
+
+### ベイズ推定
+
+また説明ぶっとばしで行きますが、統計モデルを立ててMCMCで推定を行います。
+これまた、HMCを使ったStanというソフトで行います。
+説明は別途
+
+## 推定をする
+
+まずは、統計モデルを立てます。
+まず、この場合には真の値一つあるというところはポイントです。
+標準試料の質量（重量）がこれに相当します。
+これをmu（これはもちろん$\mu$の読みですね）とします。そして、標準偏差を$sd_obs$として式を書き直すと
+
+$$
+N(x|mu, sd\_obs)=\frac{1}{\sqrt{2\pi sd\_obs^2}}\exp{\left\{-\frac{(x-mu)^2}{2sd\_obs^2}\right\}}
+$$
+というような感じになるでしょうか？
+これをStanという言語でモデル化すると以下のようになります。
+
+これでmuとsd_obsを推定しようということです。
+
+```{stan output.var="wgt1"}
+data {
+  int N;
+  real Obs[N];
+}
+
+parameters {
+  real<lower=0> mu;
+  real<lower=0> sd_obs;
+}
+
+model {
+  for(n in 1:N)
+    Obs[n] ~ normal(mu, sd_obs);
+}
+
+```
+
+ここで、気をつけないといけなのは、muもsd_obsも、点推定（mu=○○だ）ではなく、「確率分布」として
+推定されるということです。
+点推定をするためには、この分布から、平均、中央値、最頻値などの母数を計算することになります。
+とくにここで重要なのは、推定値の**幅**に関する意味が明確になるということです。
+
+### MCMCでの注意
+
+測定値を確率変数として捉えて計算をしていきます。殆どのばあい、方程式を解くイメージで
+きちっと計算することはできません((実際には積分を行うのですが、積分できな場合がほとんどです))
+。
+
+そこで、近似的に積分を行うということが必要で、そのやり方の一つにモンテカルロ法という
+シミュレーションがあります。
+
+MCMCでは、計算の目的である目的分布が定常分布にならなけば、計算は上手くいっていないということが明確です。
+したがって、常に計算が定常分布に収束したのか？を考えながらやっていきます((分布が定常分布になったようでも、答えが正しい保証があるわけではないのですが。。))
+
+## 精度推定に使うデータ数の違いを見てみる
+
+データが`r Num.data[1]`の場合を考えてみましょう。
+まずは、秤の目盛りで丸められていないデータを覗いてみましょう。
+実際にはこの値は測定できないので、この数値を使って推定する訳にはいかないのですが、
+分析対象のデータがどのように構成されているのかをみるためにヒストグラムにしてみます。
+
+
+```{r, echo=FALSE}
+dtf %>%
+  filter(n <=100) %>%
+  select(n, obs, scale) %>%
+  ggplot(aes(x=obs, y=..density..)) +
+  geom_histogram(bins=30, fill="cyan4", color="white") +
+  labs(
+    x="重量（丸め前）",
+    title=paste0("測定回数",Num.data[1],"回")
+  )
+
+```
+
+しかしながら、実際にそくていできるのは、この数値が「表示桁数」の制約をうけて、
+```{r}
+table(dtf[1:Num.data[1],"scale"])
+```
+測定できる数値の種類は2種類、1.250と1.255で、それぞれ32回、68回測定されます。
+算術平均は、`r mean(dtf[1:Num.data[1], "scale"])`となりますね。真の値は`r weight.center`でしたね。
+
+さて、早速推定をしてみましょう。
+計算のやらせ方自体は非常に簡単で、
+概ね以下のように書けば推定を行ってくれます。
+
+
+```{r}
+data.1 <- list(
+  N=Num.data[1],
+  Obs=dtf[1:Num.data[1],"scale"]
+)
+
+fit.1 <- sampling(wgt1, 
+                  data.1,
+                  seed=2896,
+                  iter=5000,
+                  core=4)
+```
+
+### 計算はうまくいったのか
+
+計算結果についての分析を始める前の作法として、計算がうまく収束したのかを見てみましょう。
+
+
+
+```{r}
+show(fit.1)
+rstan::traceplot(fit.1)
+```
+
+計算は上手く収束しているようです。
+では、実際にどのように推定されたのか見ましょう。最初は真の値の推定結果です。
+MCMCでは、計算を複数回行います（主に、初期値が違う、乱数の系列を変える）。
+それぞれの計算をchainと呼びます。本稿では特に断りを入れない限りchain=4で計算をおこなっています。
+それぞれのchainで推定された分布が大きく異なっているようだと、まず間違った計算をしています。
+
+
+```{r}
+rstan::stan_dens(fit.1, pars=c("mu"), separate_chains = TRUE)
+```
+muの推定分布は、ほぼchainで一致しているのが確認できると思います。
+ここからも、計算に使用したモデルが妥当だろうと判断することができると思います。
+
+また、秤での測定の精度に直結する$sd\_obs$についての分布も見てみましょう。
+
+```{r}
+rstan::stan_dens(fit.1, pars=c("sd_obs"), separate_chains = TRUE)
+```
+
+muほどは安定していないようですが、これも十分に収束しているようです。
+
+### 事後分布の要約など
+
+```{r}
+res.1 <- rstan::extract(fit.1)
+
+ggplot(NULL, aes(x=res.1$mu, y=..density..)) +
+  geom_line(stat="density") +
+  labs(
+    x=expression(mu)
+  )
+```
+みるからに正規分布で近似できそうです（笑い）この分布の平均と標準偏差を計算して、
+それから計算される正規分布と重ねて表示してみましょう。
+
+```{r}
+mn.100 <- mean(res.1$mu)
+sd.100 <- sd(res.1$mu)
+
+dens.100 <- density(res.1$mu)
+dens.100
+
+df.100 <- data.frame("mu"=dens.100$x, "obs"=dens.100$y)
+
+df.100 %>%
+  mutate(cal=dnorm(mu, mean = mn.100, sd=sd.100)) %>%
+  ggplot(aes(x=mu, y=obs)) +
+  geom_line(size=1.2) +
+  geom_line(aes(x=mu,y=cal), linetype="dashed",size=1.0,color="blue") +
+  labs(
+    x=expression(mu),
+    y="density"
+  )
+```
+
+点線で示したのが正規分布です。ほぼ重なっていますね。
+正規分布であるとすれば、統計の要約値の計算は簡単です。
+
+また、$sd\_obs$の推定分布についても見てみましょう。
+
+```{r}
+dens.sd.100 <- density(res.1$sd_obs)
+mean.sd.100 <- mean(res.1$sd_obs)
+sd.sd.100 <- sd(res.1$sd_obs)
+
+df.sd.100 <- data.frame("sigma"=dens.sd.100$x, "obs"=dens.sd.100$y)
+ggplot(df.sd.100, aes(x=sigma, y=obs)) +
+  geom_line() +
+  labs(
+    x=expression(sigma),
+    y="density"
+  )
+```
+ちょっと歪んでいて心配ですが、これも正規分布で近似することを考えてみましょう
+
+```{r}
+df.sd.100 %>%
+  mutate(cal=dnorm(sigma, mean=mean.sd.100, sd=sd.sd.100)) %>%
+  ggplot(aes(x=sigma, y=obs)) +
+  geom_line(size=1.2) +
+  geom_line(aes(x=sigma,y=cal), linetype="dashed", color="blue", size=1.0) +
+  annotate("text", x=0.0028, y=1500, label=paste0("mu==", round(mean(mean.sd.100),4)),
+           parse=TRUE) +
+  annotate("text", x=0.0028, y=1400, label=paste0("sigma==", round(sd.sd.100,4)),
+           parse=TRUE)
+```
+
+ここで、最初の仮定にもどって見ましょう。
+
+「この秤は、1.2gのあたりでは、標準偏差=`r round(mean.sd.100, 4)`の誤差で測定を行うことができるだろう」
+というのが一つの結論です。
+
+
+## 少ない測定回数で推定する
+
+
+ここで、モデルを少し変えます。最初のもでるでは、秤の測定誤差に「事前情報」をできるだけ入れないようにして推定しました。
+
+今度は、データ`r Num.data[2]`個で推定します。このときに、秤の精度についての事前情報が
+どのような影響をおよぼすのかを見てみましょう。
+
+```{stan output.var="wgt2"}
+data {
+  int N;
+  real Obs[N];
+  real Sd_mean;
+  real Sd_sd;
+}
+
+parameters {
+  real<lower=0> mu;
+  real<lower=0> sd_obs;
+}
+
+model {
+  sd_obs ~ normal(Sd_mean, Sd_sd);
+  for(n in 1:N)
+    Obs[n] ~ normal(mu, sd_obs);
+}
+```
+
+```{r}
+data.2 <- list(
+  N=Num.data[2],
+  Obs=dtf$scale[1:Num.data[2]],
+  Sd_mean=mean.sd.100,
+  Sd_sd=sd.sd.100
+)
+
+fit.2 <- sampling(wgt2, 
+                  data.2,
+                  seed=2896,
+                  iter=5000,
+                  core=4)
+```
+
+まずは作法の収束確認です
+
+```{r}
+rstan::traceplot(fit.2)
+```
+
+traceには問題がなさそうです。
+次に、muの分布を見てみましょう。
+
+```{r}
+rstan::stan_dens(fit.2, pars=c("mu"), separate_chains = TRUE)
+```
+
+一応、標準偏差の分布も見ましょう。
+
+```{r}
+rstan::stan_dens(fit.2, pars=c("sd_obs"), separate_chains = TRUE)
+```
+
+こちらも大丈そうです。
+
+それでは、推定された$\mu$の分布を比較してみましょう。
+
+```{r}
+res.2 <- rstan::extract(fit.2)
+
+dens.10 <- density(res.2$mu)
+
+frame.10 <- data.frame("mu"=dens.10$x, "density"=dens.10$y, "data"="n_10")
+frame.100 <- data.frame("mu"=dens.100$x, "density"=dens.100$y, "data"="n_100")
+
+rbind(frame.10, frame.100) %>%
+
+ggplot(aes(x=mu,y=density,group=data)) +
+  geom_line(aes(color=data)) +
+  geom_vline(xintercept = weight.center, linetype="dotted", size=1.0)
+
+```
+
+```{r}
+data.2.2 <- list(
+  N=Num.data[2],
+  Obs=dtf$scale[1:Num.data[2]]
+)
+
+fit.2.2 <- sampling(wgt1, 
+                  data.2.2,
+                  seed=2896,
+                  iter=5000,
+                  core=4)
+
+```
+
+```{r}
+rstan::traceplot(fit.2.2)
+```
+
+```{r}
+rstan::stan_dens(fit.2.2, pars=c("mu"), separate_chains = TRUE)
+```
+```{r}
+rstan::stan_dens(fit.2.2, pars=c("sd_obs"), separate_chains = TRUE)
+```
+
+```{r}
+res.2.2 <- rstan::extract(fit.2.2)
+dens.10.2 <- density(res.2.2$mu)
+
+frame.10.2 <- data.frame("mu"=dens.10.2$x, "density"=dens.10.2$y, "data"="n_10_2")
+
+rbind(frame.10, frame.10.2) %>%
+  ggplot(aes(x=mu, y=density, group=data)) +
+  geom_line(aes(color=data)) +
+  labs(
+    x=expression(mu)
+  )
+```
+
+ほとんど推定分布は変わりませんね。
+
+では、標準偏差の推定分布どうなっているんでしょうか？
+
+```{r}
+dens.sd.10 <- density(res.2$sd_obs)
+dens.sd.10.2 <- density(res.2.2$sd_obs)
+
+frame.sd.10 <- data.frame("sigma"=dens.sd.10$x, "density"=dens.sd.10$y, "data"="n_10")
+frame.sd.10.2 <- data.frame("sigma"=dens.sd.10.2$x, "density"=dens.sd.10.2$y, "data"="n_10_2")
+
+rbind(frame.sd.10, frame.sd.10.2) %>%
+
+ggplot(aes(x=sigma, y=density, group=data)) +
+  geom_line(aes(color=data))
+```
+
+
+```{r}
+data.3 <- list(
+  N=Num.data[3],
+  Obs=dtf$scale[1:Num.data[3]],
+  Sd_mean=mean.sd.100,
+  Sd_sd=sd.sd.100
+)
+
+fit.3 <- sampling(wgt2, 
+                  data.3,
+                  seed=2896,
+                  iter=5000,
+                  core=4)
+```
+
+```{r}
+rstan::traceplot(fit.3)
+```
+
+```{r}
+rstan::stan_dens(fit.3, separate_chains = TRUE)
+```
+
+```{r}
+data.3.2 <- list(
+  N=Num.data[3],
+  Obs=dtf$scale[1:Num.data[3]]
+)
+
+fit.3.2 <- sampling(wgt1, 
+                  data.3.2,
+                  seed=2896,
+                  iter=5000,
+                  core=4)
+```
+```{r}
+rstan::traceplot(fit.3.2)
+```
+
+```{r}
+rstan::stan_dens(fit.3.2, separate_chains = TRUE)
+stan_ac(fit.3.2)
+```
+```{r}
+summary(fit.3.2)
+```
+

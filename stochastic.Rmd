@@ -13,26 +13,36 @@ library(dplyr)
 library(rstan)
 source("initialize.R")
 source("util/DBDA2E-utilities.R")
+source("util/my-util-gen.R")
 ```
 
-## 確率変数やら面倒
+## 数値を確率変数として見る
+
+実験なり経営分析で扱う数字、また収益予測で使う数値をほぼ全て*確率変数*として扱ってみようという話です。
+
+例えば、ある試料の重量を測定します。
+通常は、測定をした平均値と推定される誤差を併記して$12.5\pm0.2[g]$などと表記をします。
+本稿では、この数字の読み方として、平均（$\mu$）が12.5、標準偏差（$\sigma$）がである標準偏差に従う*確率変数*であることを再確認使用というところです。
+
+来年度の予算を立てるときに、「円ドルレートを123円として、上限を125円、加減を120円とする」
+というような話もあるでしょう。これも、*円ドルレートを確率変数*として考えます。
+ただし、これは「正規分布」であるとは限らないのですが、このような確率変数については、また別に話をしましょう。
 
 ### 重さを測ってみる
 
-実験とかやっているとわかるのですが、重量を測定するのは比較的簡単ですね。
+重量の測定は比較的安定です。
 研究室にしろ、現場にしろ、至る所に電子天秤がおいてあり、重さを測りたいものをのせるだけで、
 けっこう多くの桁数が表示されます。それだけ、正確に測れてるってことなんでしょうか？
-
-今回は、測定精度の話をきちんとするつもりはありません。（とっても大変なんです）
+今回は、測定精度の話をきちんとするつもりはありません。
 何を言いたいかというと、「なんにせよ*正確に*測るのは難しい」というところです。
-色んな所で聞かれる「真の値」なんて、測定することは*不可能*だという立場について考えていきたいのです。
+
 
 ### 真の重さ？
 
 さて、ある「物」を見たときに、質量というのは比較的安定なものだということは、
 皆さんもご存知で、しかも感覚に合うと感じているのではないでしょうか？
 
-目の前に鉄の玉があるとき、表面が参加されていくから「質量」は一定でないとか、
+目の前に鉄の玉があるとき、表面が酸化されていくから「質量」は一定でないとか、
 微量に含まれている放射性同位元素が崩壊していくから(ry
 などの話をのぞけば、「真の値」があるんだろうなというかんじです。
 
@@ -42,9 +52,9 @@ source("util/DBDA2E-utilities.R")
 
 誤差という言葉は便利です。正確に使うのは多分難しいです。そこで、本稿では、とくに初期の段階では、「誤差」という単語をしつこく書くようにします。
 
-+ある「物」を、電子天秤に載せたら、12.025g（グラム）と表示されました。
-+同じ物をもう一度、同じ電子天秤に載せたら12.30gが表示されました。
-+心配になったので、乗せては下ろしを10回繰り返して数値を記録したら
+*ある「物」を、電子天秤に載せたら、12.025g（グラム）と表示されました。
+*同じ物をもう一度、同じ電子天秤に載せたら12.030gが表示されました。
+*心配になったので、乗せては下ろしを10回繰り返して数値を記録したら
 `r dt.sc`となりました。平均は`r round(mean(dt.sc),3)`です。普遍標準偏差は`r round(sd(dt.sc),3)`とかになるわけです。
 
 さて、この実験結果から、「真の値は`r round(mean(dt.sc),3)`である！」というのは、ちょっと
@@ -54,35 +64,6 @@ source("util/DBDA2E-utilities.R")
 google先生で「誤差論」とググれば、ちゃんとしたサイトがたくさん見つかります。
 
 ざっくりいって、実験データから「推定」される値と、その「範囲」を認識することが大事なんだよということだけを頭に入れておけば良いです。
-
-## 為替レート
-
-
-[みずほ銀行のサイト](https://www.mizuhobank.co.jp/rate/market/historical.html)から2017-12-06にダウンロード(data/quote.csv)
-
-```{r, echo=FALSE}
-kawase %>%
-  gather(key="currency", value = rate, -date) %>%
-  ggplot(aes(x=date, y=rate, group=currency)) +
-  geom_line(aes(color=currency)) +
-  labs(
-    x="日付",
-    y="為替レート",
-    color="通貨"
-  )
-
-```
-
-```{r}
-kawase.2017.nov <- kawase %>%
-  filter(date > as.POSIXct("2017-11-01") & date < as.POSIXct("2017-11-30")) 
-
-ggplot(kawase.2017.nov, aes(x=date, y=USD)) +
-  geom_point(size = 3) +
-  labs(
-    x="日付（2017年）"
-  )
-```
 
 
 ## 電子天秤の表示について考えてみる
@@ -95,20 +76,14 @@ ggplot(kawase.2017.nov, aes(x=date, y=USD)) +
 
 ### 表示の最後の最後の桁のあつかい
 
-測定器の小数点以下の表示桁数が3桁あり、最後の桁は0/5だという場合を考えてみましょう。
-まずは、最終桁数を0/5に制限する関数をRで実装します。
-
-```{r}
-round2 <- function(x, digits = 3){
-    round(x*2, (digits-1))/2
-}
-
-```
-この実装だと、digitsが0とかで問題が発生しますが、とりあえずは放置。
+ここで、ある仮想的な秤について考えてみましょう。
+測定器の小数点以下の表示桁数が3桁あり、最後の桁は0/5（0か5のどちらか）としましょう。
 
 
+重さが0gから0.01gのものを測定しても、測定される値は0.000, 0.005, 0.010の3種類です。
+グラフでイメージを書いてみると
 
-```{r}
+```{r, echo=FALSE}
 tr.x <- seq(0, 0.01, by = 0.0005)
 
 data.frame("x"=tr.x, "rnd"=round(tr.x,3), "rnd2"=round2(tr.x, 3)) %>%
@@ -122,11 +97,21 @@ ggplot(aes(x=x, y=rnd2)) +
 
 ```
 
-こんな感じで、階段状の出力になります。
+こんな感じで、階段状の出力になります。これは一見デジタル機器固有の話と思うかもしれませんが、
+アナログ（あなくろ？）な物差しとかを使っても話は一緒です。
 
-次は、参考用のダミーデータ。
+##　一つのものを繰り返して測定してみる
 
-```{r, echo=FALSE}
+統計ソフトを使って、このあたりの仮想実験をしてみましょう。
+Excelを使ってもできるとは思いますが、使いません。
+
+本稿では、ちょっと頑張ってMCMC（マルコフ連鎖モンテカルロ法）もやっています。
+なのでRという統計処理言語（ソフト？統合環境）を使用します。
+
+
+### どうやってテスト用データを作るか
+
+```{r, include=FALSE}
 set.seed(2896)
 weight.center = 1.2532
 weight.sd = 0.002
@@ -135,146 +120,147 @@ N.data <- 10000
 
 obs.dt <- rnorm(N.data, mean = weight.center, sd=weight.sd)
 
-dtf <- data.frame("n"=1:N.data, "true"=obs.dt, "observe"=round2(obs.dt,3)) %>%
-  mutate(cum.true=cummean(true), cum.obs=cummean(observe)) %>%
-  mutate(tr.sd=sqrt(cumsum((true - cum.true)^2)/n), 
-         obs.sd=sqrt(cumsum((observe - cum.obs)^2)/n))
-  
-dtf %>%
-  filter(n < 1000) %>%
-  ggplot(aes(x=n,y=tr.sd)) +
-  geom_line() +
-    geom_line(aes(x=n,y=obs.sd), color="red") +
-  geom_hline(yintercept = weight.sd, linetype="dashed")
+dtf <- data.frame("n"=1:N.data, "obs"=obs.dt, "scale"=round2(obs.dt,3)) %>%
+  mutate(cum.obs=cummean(obs), cum.scale=cummean(scale)) %>%
+  mutate(sd.obs=sqrt(cumsum((obs - cum.obs)^2)/(n-1)), 
+         sd.scale=sqrt(cumsum((scale - cum.scale)^2)/(n-1)))
 ```
 
+まず、測定する試料の「真の重さ」を決めます。これを`r weight.center`とします。
+今回の思考実験で使用する秤は、小数点以下3桁の数字を表示し、しかも最後の桁は0/5です。
+「真の重さ」は、この秤とは別のもので精密測定したと考えても良いかもしれません。いわゆる
+標準試料といったかんじでしょうか？
 
-「真」の重さは`r weight.center`だとします。これは、いわゆる誤差は含んでいないと考えます。
-でも実際に「真」の値を直接測定することは不可能です。
-測定には、必ず誤差が含まれます。この例では、正規分布に従う「ノイズ」が真の測定値に加算されます。さらに、この秤の目盛りの最後の桁は0/5に限定されているので、測定値がその制限を受けます。
+そして、この試料を測定するときに、「何らかの原因で」ノイズ混入すると考えます。
+このノイズは$\mu=0.0$で$\sigma=$`r weight.sd`の正規分布に従うようにします。
 
 $$
-  N(x|\mu, \sigma)=F(x)=\frac{1}{\sqrt{2\pi \sigma^2}}\exp{\left\{-\frac{(x-\mu)^2}{2\sigma^2}\right\}}
+  N(x|\mu, \sigma)=\frac{1}{\sqrt{2\pi \sigma^2}}\exp{\left\{-\frac{(x-\mu)^2}{2\sigma^2}\right\}}
 $$
-標準偏差$\sigma$を`r weight.sd`として、乱数を発生させます。
+
+そして、実際に測定されるのは、真の重さに前述のノイズが加わった値を、秤の表示精度で
+丸めたものです。
+
+シミュレーション（というか分析）のために、`r N.data`個のデータを作成します。このデータの最初の10個を示すと
+
+```{r, echo=FALSE}
+dtf %>%
+  select(obs, scale) %>%
+  head(10)
+```
+obsと書いてある列が、測定時にノイズが混入した値、scaleと書いてある列は、その値を測定桁で丸めたものです。この範囲では1.255か1.250のどちらかの値が観測されています。
+
+せっかくなので、`r N.data`個の分布を見ておきましょう。
+
+```{r, echo=FALSE}
+dtf %>%
+  ggplot(aes(x=obs, y=..density..)) +
+  geom_histogram(bins=30, fill="cyan4", color="white") +
+  geom_density() +
+  geom_vline(xintercept = weight.center, linetype="dashed")
+
+```
+生成されたデータの平均は`r round(mean(dtf$obs), 3)`で、標準偏差は`r round(sd(dtf$obs), 3)`となります。当たり前ですが、ほぼ想定通りのデータが生成されています。
+これに、秤の目盛りから読み取ったデータを重ねて表示してみましょう。
+
 ```{r}
 dtf %>%
-  filter(n <100) %>%
-  ggplot(aes(x=n,y=cum.true)) +
-  geom_line(color="blue") +
-  geom_line(aes(x=n,y=cum.obs), color="red") +
-  geom_ribbon(aes(ymin=cum.true-tr.sd, ymax=cum.true+tr.sd), alpha=0.2) +
+  select(n, obs, scale) %>%
+  gather(key="type", value = "weight", -n) %>%
+  ggplot(aes(x=weight, y=..density.., group=type)) +
+  geom_histogram(bins=30, aes(fill=type), position = "dodge")
+```
+
+`r N.data`個のデータで回数を数えると
+```{r}
+table(dtf$scale)
+
+
+```
+
+となります。そして、その平均値は`r round(mean(dtf$scale), 3)`となり、理論値（真の値）が出てきます。まあ、これだけのデータがあれば、
+正規分布に従うというのは、すんなりと受け入れられると思います。
+
+### データの個数で推定値（平均など）がどう変わるか
+
+ある意味で、大数の法則を可視化してみましょう。
+
+
+```{r, echo=FALSE}
+dtf %>%
+  select(n, cum.obs, cum.scale) %>%
+  gather(key="type", value = "weight", -n) %>%
+  ggplot(aes(x=n, y=weight, group=type)) +
+  geom_line(aes(color=type)) +
   geom_hline(yintercept = weight.center, linetype="dashed") +
-  geom_ribbon(aes(ymin=cum.obs-obs.sd, ymax=cum.obs+obs.sd), alpha=0.2,fill="red")
-```
-```{r}
-#data for stan model
-
-Num.data = c(100, 10, 5)
-
+  labs(
+    x="測定数",
+    y=expression(mu)
+  ) 
+  
 ```
 
-データ数は`r Num.data`でやる。
+このグラフは、測定回数分のデータの平均値をプロットしたものです。例えば、横軸が100の点では、
+測定された重さのデータ（cum.obsは、真の値にノイズが混入したもの、
+cum.scaleはそれを表示スケールで丸めたもの）の平均です。
 
-```{stan output.var="wgt1"}
-data {
-  int N;
-  real Obs[N];
-}
+$$
+\mu_n=\frac{1}{n}\sum_{k=1}^nx_k
+$$
+こんな感じでそれぞれの測定値の平均を計算してプロットしています。いわば「積算平均」です。
+グラフ中の点線は理論値です。測定数が増えると、積算平均値はある範囲にむかって収束していくのが
+確認できると思います。
 
-parameters {
-  real<lower=0> mu;
-  real<lower=0> sd_obs;
-}
+次にサンプルから推定される不偏分散を測定数に対して計算してみましょう。こんどは
 
-model {
-  for(n in 1:N)
-    Obs[n] ~ normal(mu, sd_obs);
-}
+$$
+  \sigma_n=\sqrt{\frac{1}{n-1}\sum_{k=1}(x_k-\bar{x_n})^2}
+$$
 
-```
+```{r, echo=FALSE}
 
-```{r}
-data1 <- list(
-  N=Num.data[1],
-  Obs=dtf$observe[1:Num.data[1]]
-)
-
-fit1 <- sampling(wgt1, data1,
-                 core=4,
-                 iter=10000)
-```
-
-```{r}
-rstan::traceplot(fit1)
-
-show(fit1)
-
-stan_dens(fit1, pars=c("mu"), separate_chains = TRUE)
-
-stan_dens(fit1, pars=c("sd_obs"), separate_chains = TRUE)
-```
-```{r}
-data2 <- list(
-  N=Num.data[2],
-  Obs=dtf$observe[1:Num.data[2]]
-)
-
-fit2 <- sampling(wgt1, data2,
-                 core=4,
-                 iter=10000)
-```
-
-```{r}
-show(fit2)
-
-rstan::traceplot(fit2)
-stan_dens(fit2, pars=c("mu"), separate_chains = TRUE)
-
-stan_dens(fit2, pars=c("sd_obs"), separate_chains = TRUE)
-```
-
-```{r}
-data3 <- list(
-  N=Num.data[3],
-  Obs=dtf$observe[1:Num.data[3]]
-)
-
-fit3 <- sampling(wgt1, data3,
-                 core=4,
-                 iter=10000)
-```
-
-```{r}
-rstan::traceplot(fit3)
-stan_dens(fit3, pars=c("mu"), separate_chains = TRUE)
-stan_dens(fit3, pars=c("sd_obs"), separate_chains = TRUE)
-```
-
-```{r}
-res1 <- rstan::extract(fit1)
-res2 <- rstan::extract(fit2)
-res3 <- rstan::extract(fit3)
-
-
-data.frame("n"=1:length(res1$mu), res1$mu, res2$mu, res3$mu) %>%
-  gather(key="sampleCount", value = mu, - n) %>%
-  filter(mu >1.25 & mu < 1.26) %>%
-  ggplot(aes(x=mu, group=sampleCount)) +
-  geom_line(stat="density", aes(color=sampleCount)) 
-```
-
-```{r}
-data.frame("n"=1:length(res1$sd_obs), res1$sd_obs, res2$sd_obs, res3$sd_obs) %>%
-  gather(key="sampleCount", value = sigma, - n) %>%
-  filter(sigma >0 & sigma < 0.005) %>%
-  ggplot(aes(x=sigma, group=sampleCount)) +
-  geom_line(stat="density", aes(color=sampleCount)) 
+dtf[-1,] %>%
+  select(n, sd.obs, sd.scale) %>%
+  gather(key="type", value = "sd", -n) %>%
+  ggplot(aes(x=n, y=sd, group=type)) +
+  geom_line(aes(color=type)) +
+  labs(
+    x="測定数",
+    y=expression(sigma)
+  ) +
+  geom_hline(yintercept = weight.sd, linetype="dotted")
 ```
 
 
+このグラフの点線も、データを作成するときにしていしたいわゆる理論値です。
+やはり測定点数を増やせば、正しい値を推定できるというイメーいを持っていただけると思います。
 
-```{r}
+もう少し点数が少ない部分を拡大して見てみましょう。
+ここでは、秤の目盛りで読み取った値に関して注目します。
 
+```{r, echo=FALSE}
+
+dfv <- dtf[-(1:2),] %>%
+  select(n, cum.scale, cum.obs) %>%
+  filter(n < 100) %>%
+  rename(scale=cum.scale, obs=cum.obs) %>%
+  gather(key="type", value = "mu", -n)
+
+dfr <- dtf[-(1:2),] %>%
+  mutate(upper=cum.scale+sd.scale, lower=cum.scale-sd.scale) %>%
+  filter(n < 100) %>%
+  select(n, upper, lower)
+
+left_join(dfv, dfr, by="n") %>%
+  ggplot(aes(x=n,y=mu,group=type)) +
+  geom_line(aes(color=type)) +
+  geom_ribbon(aes(ymin=lower, ymax=upper), alpha=0.1) +
+  geom_hline(yintercept = weight.center, linetype="dotted") +
+  ylim(1.250, 1.260) +
+  labs(
+    x="測定回数",
+    y=expression(mu)
+  )
+    
 ```
 
